@@ -1,8 +1,9 @@
 """Finish-turning deflection model (ME699 homework, Parts 1 and 2).
 
 Part 1: cantilever beam deflection, point load at the free end.
-Part 2: Ti-6Al-4V finish-turning forces with a nose-radius tool, the resulting
+Part 2: finish-turning forces with a nose-radius tool, the resulting
 workpiece + machine deflection, and the true vs nominal (radial) depth of cut.
+Material defaults to Al6061 (see MATERIALS); Ti-6Al-4V is the homework/workbook set.
 
 Units: mm, N, N/mm^2 (= MPa), rad. Lengths/forces carry _mm/_N suffixes.
 Only the kc/kf power laws use micrometres (h_um = 1000 * h_mm).
@@ -14,26 +15,40 @@ from __future__ import annotations
 import argparse
 import math
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 
 
+# kc = kc1 * h_um**mc, kf = kf1 * h_um**mf (N/mm^2, h in um)
+MATERIALS: dict[str, dict[str, Any]] = {
+    # E from the course AA6061 thermal sheet; kc/kf power-law fit of the course
+    # 7075 Fc/Ff data (Cutting Force Data.xlsx, 3 mm width) used as an Al proxy,
+    # since the course has no 6061 force data. 7075 is harder -> forces run high.
+    "al6061": dict(material="Al6061", E_GPa=70.0, kc1=2534.0, mc=-0.149, kf1=2126.0, mf=-0.168),
+    # Homework / Nose Radius workbook constants
+    "ti64": dict(material="Ti-6Al-4V", E_GPa=114.0, kc1=4500.0, mc=-0.175, kf1=18250.0, mf=-0.611),
+}
+
+
 @dataclass(frozen=True)
 class Inputs:
-    """Process, material and machine inputs (defaults: homework hints + example workbook)."""
+    """Process, material and machine inputs (defaults: homework hints + Al6061 workpiece)."""
     rc_mm: float = 0.8            # tool nose radius
     f_mm: float = 0.18            # feed per revolution (axial)
     ap_mm: float = 0.25           # nominal depth of cut (radial)
     d_mm: float = 16.0            # workpiece diameter before the pass
     L_mm: float = 160.0           # overhang length (L/D = 10)
-    E_GPa: float = 114.0          # Ti-6Al-4V Young's modulus
     k_machine_N_mm: float = 50_000.0  # machine/tool-holder stiffness
     vc_m_min: float = 60.0        # cutting speed
-    kc1: float = 4500.0           # specific cutting force at h = 1 um (N/mm^2)
-    mc: float = -0.175            # kc = kc1 * h_um**mc
-    kf1: float = 18250.0          # specific feed force at h = 1 um (N/mm^2)
-    mf: float = -0.611            # kf = kf1 * h_um**mf
     dkappa: float = 0.005         # target kappa step (rad)
+    # material (defaults = Al6061)
+    material: str = "Al6061"
+    E_GPa: float = 70.0           # Young's modulus
+    kc1: float = 2534.0           # specific cutting force at h = 1 um (N/mm^2)
+    mc: float = -0.149
+    kf1: float = 2126.0           # specific feed force at h = 1 um (N/mm^2)
+    mf: float = -0.168
 
 
 @dataclass(frozen=True)
@@ -173,8 +188,8 @@ def report(inp: Inputs, res: DeflectionResult) -> str:
     torque_Nm = F.Fc_N * inp.d_mm / 2 / 1000
     power_W = torque_Nm * 2 * math.pi * rpm / 60
     Ra_um = inp.f_mm**2 / (32 * inp.rc_mm) * 1000 * 4 / 3   # workbook's 4/3 factor
-    sandvik_N = 2300 * F.h_avg_mm**-0.15 * inp.f_mm * res.ap_true_mm
     lines = [
+        f"material {inp.material} (E={inp.E_GPa:g} GPa)",
         f"rc={inp.rc_mm} mm  f={inp.f_mm} mm/rev  d={inp.d_mm} mm  L={inp.L_mm} mm (L/D={inp.L_mm / inp.d_mm:.1f})",
         f"nominal ap        {res.ap_nom_mm:.4f} mm",
         f"true ap           {res.ap_true_mm:.4f} mm  ({res.ap_true_mm / res.ap_nom_mm:.0%} of nominal)"
@@ -185,8 +200,11 @@ def report(inp: Inputs, res: DeflectionResult) -> str:
         f"forces            Fc {F.Fc_N:.1f} N   Fradial {F.Fr_N:.1f} N   Faxial {F.Fa_N:.1f} N",
         f"engaged arc       {math.degrees(F.kappa_min):.2f} to {math.degrees(F.kappa_max):.2f} deg, h_avg {F.h_avg_mm * 1000:.1f} um",
         f"rpm {rpm:.0f}  torque {torque_Nm:.2f} N*m  power {power_W:.0f} W",
-        f"kinematic Ra {Ra_um:.2f} um   Sandvik Fc check {sandvik_N:.1f} N",
+        f"kinematic Ra {Ra_um:.2f} um",
     ]
+    if inp.material == "Ti-6Al-4V":   # Sandvik constants are Ti-6Al-4V only
+        sandvik_N = 2300 * F.h_avg_mm**-0.15 * inp.f_mm * res.ap_true_mm
+        lines.append(f"Sandvik Fc check {sandvik_N:.1f} N")
     if res.deflection_mm > 0.1 * F.h_avg_mm:
         lines.append("WARNING: deflection > 10% of average chip thickness (chatter risk)")
     if not 0.1 * inp.rc_mm <= inp.ap_mm <= inp.rc_mm / 3:
@@ -220,13 +238,16 @@ def main() -> None:
     p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     d = Inputs()
     for name, default in [("rc", d.rc_mm), ("f", d.f_mm), ("ap", d.ap_mm), ("d", d.d_mm),
-                          ("L", d.L_mm), ("E", d.E_GPa), ("k", d.k_machine_N_mm)]:
+                          ("L", d.L_mm), ("k", d.k_machine_N_mm)]:
         p.add_argument(f"--{name}", type=float, default=default)
+    p.add_argument("--E", type=float, help="Young's modulus (GPa); overrides the material's")
+    p.add_argument("--material", choices=MATERIALS, default="al6061")
     p.add_argument("--target", type=float, help="desired final diameter (mm); solves for nominal ap")
     p.add_argument("--plot", action="store_true")
     a = p.parse_args()
-    inp = replace(d, rc_mm=a.rc, f_mm=a.f, ap_mm=a.ap, d_mm=a.d, L_mm=a.L, E_GPa=a.E,
-                  k_machine_N_mm=a.k)
+    mat = MATERIALS[a.material]
+    inp = replace(d, **{**mat, **({"E_GPa": a.E} if a.E else {})}, rc_mm=a.rc, f_mm=a.f, ap_mm=a.ap, d_mm=a.d,
+                  L_mm=a.L, k_machine_N_mm=a.k)
 
     if a.target is not None:
         ap_nom, res = solve_nominal_ap(inp, a.target)

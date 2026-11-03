@@ -6,8 +6,9 @@ import pytest
 
 import turning_model as tm
 
+TI64 = tm.MATERIALS["ti64"]  # workbooks are Ti-6Al-4V
 # Workbook "Deflection Calculator Example": sharp-tool feed-force constants
-SHARP = tm.Inputs(rc_mm=0.8, f_mm=0.2, ap_mm=0.4, kf1=5966.0, mf=-0.382)
+SHARP = tm.Inputs(**{**TI64, "kf1": 5966.0, "mf": -0.382}, rc_mm=0.8, f_mm=0.2, ap_mm=0.4)
 
 
 def forces_99(inp: tm.Inputs, ap_mm: float) -> tm.Forces:
@@ -36,7 +37,7 @@ def test_forces_match_deflection_workbook():
 
 
 def test_forces_match_nose_radius_workbook():
-    inp = tm.Inputs(rc_mm=0.8, f_mm=0.3, ap_mm=0.663)  # homework kc/kf constants
+    inp = tm.Inputs(**TI64, rc_mm=0.8, f_mm=0.3, ap_mm=0.663)  # homework kc/kf constants
     F = forces_99(inp, 0.663)
     assert F.Fc_N == pytest.approx(425.09, rel=1e-3)
     assert F.Fr_N == pytest.approx(117.85, rel=1e-3)
@@ -86,6 +87,23 @@ def test_diameters():
     assert res.d_zero_mm == pytest.approx(SHARP.d_mm - 2 * SHARP.ap_mm)
     assert res.d_final_mm == pytest.approx(SHARP.d_mm - 2 * res.ap_true_mm)
     assert res.d_final_mm > res.d_zero_mm  # deflection leaves material behind
+
+
+def test_default_material_is_al6061():
+    inp = tm.Inputs()
+    assert inp.material == "Al6061" and inp.E_GPa == 70.0
+    assert tm.MATERIALS["al6061"] == {
+        "material": inp.material, "E_GPa": inp.E_GPa, "kc1": inp.kc1, "mc": inp.mc,
+        "kf1": inp.kf1, "mf": inp.mf}
+
+
+def test_al6061_homework_case_is_sane():
+    res = tm.solve_deflection(tm.Inputs())
+    assert res.converged
+    assert 0 < res.ap_true_mm < res.ap_nom_mm
+    # softer + lower modulus: beam compliance rises by E_Ti/E_Al vs the Ti workpiece
+    ti = tm.compliance_mm_per_N(tm.Inputs(**TI64))[0]
+    assert tm.compliance_mm_per_N(tm.Inputs())[0] == pytest.approx(ti * 114 / 70)
 
 
 def test_optimiser_hits_target_diameter():

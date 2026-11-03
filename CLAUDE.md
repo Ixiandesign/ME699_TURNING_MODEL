@@ -1,7 +1,7 @@
 # ME699 finish-turning deflection model
 
 Python model for the ME699 homework: cantilever beam deflection + finish-turning
-forces (Ti-6Al-4V) -> true vs nominal depth of cut. Reference physics and the
+forces (default Al6061, `--material ti64` for the homework/workbook set) -> true vs nominal depth of cut. Reference physics and the
 example workbook live in `ME699_context/` (start at `INDEX.md`).
 
 ## Repo rules
