@@ -3,229 +3,189 @@
 Part 1: cantilever beam deflection, point load at the free end.
 Part 2: finish-turning forces with a nose-radius tool, the resulting
 workpiece + machine deflection, and the true vs nominal (radial) depth of cut.
-Material defaults to Al6061 (see MATERIALS); Ti-6Al-4V is the homework/workbook set.
 
-Units: mm, N, N/mm^2 (= MPa), rad. Lengths/forces carry _mm/_N suffixes.
-Only the kc/kf power laws use micrometres (h_um = 1000 * h_mm).
+Units: mm, N, N/mm^2 (= MPa), rad. Only the kc/kf power laws use micrometres
+(h_um = 1000 * h_mm). Inputs are two plain dicts:
+  p   process: rc, f, ap, d, L, k_machine, vc  (see DEFAULTS)
+  mat material: name, E_GPa, kc1, mc, kf1, mf  (see MATERIALS)
 
-Usage: python turning_model.py [--rc 0.8 --f 0.18 --ap 0.25 --target 15.5 --plot]
+Usage: python turning_model.py [--material ti64 --rc 0.8 --f 0.18 --ap 0.25 --target 15.5 --plot]
 """
 from __future__ import annotations
 
 import argparse
 import math
-from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 
+DKAPPA = 0.005   # target kappa step (rad)
+
+DEFAULTS: dict[str, Any] = dict(
+    rc=0.8,           # tool nose radius
+    f=0.18,           # feed per revolution (axial)
+    ap=0.25,          # nominal depth of cut (radial)
+    d=16.0,           # workpiece diameter before the pass
+    L=160.0,          # overhang length (L/D = 10)
+    k_machine=50_000.0,  # machine / tool-holder stiffness (N/mm)
+    vc=60.0,          # cutting speed (m/min)
+)
 
 # kc = kc1 * h_um**mc, kf = kf1 * h_um**mf (N/mm^2, h in um)
 MATERIALS: dict[str, dict[str, Any]] = {
     # E from the course AA6061 thermal sheet; kc/kf power-law fit of the course
     # 7075 Fc/Ff data (Cutting Force Data.xlsx, 3 mm width) used as an Al proxy,
     # since the course has no 6061 force data. 7075 is harder -> forces run high.
-    "al6061": dict(material="Al6061", E_GPa=70.0, kc1=2534.0, mc=-0.149, kf1=2126.0, mf=-0.168),
+    "al6061": dict(name="Al6061", E_GPa=70.0, kc1=2534.0, mc=-0.149, kf1=2126.0, mf=-0.168),
     # Homework / Nose Radius workbook constants
-    "ti64": dict(material="Ti-6Al-4V", E_GPa=114.0, kc1=4500.0, mc=-0.175, kf1=18250.0, mf=-0.611),
+    "ti64": dict(name="Ti-6Al-4V", E_GPa=114.0, kc1=4500.0, mc=-0.175, kf1=18250.0, mf=-0.611),
 }
-
-
-@dataclass(frozen=True)
-class Inputs:
-    """Process, material and machine inputs (defaults: homework hints + Al6061 workpiece)."""
-    rc_mm: float = 0.8            # tool nose radius
-    f_mm: float = 0.18            # feed per revolution (axial)
-    ap_mm: float = 0.25           # nominal depth of cut (radial)
-    d_mm: float = 16.0            # workpiece diameter before the pass
-    L_mm: float = 160.0           # overhang length (L/D = 10)
-    k_machine_N_mm: float = 50_000.0  # machine/tool-holder stiffness
-    vc_m_min: float = 60.0        # cutting speed
-    dkappa: float = 0.005         # target kappa step (rad)
-    # material (defaults = Al6061)
-    material: str = "Al6061"
-    E_GPa: float = 70.0           # Young's modulus
-    kc1: float = 2534.0           # specific cutting force at h = 1 um (N/mm^2)
-    mc: float = -0.149
-    kf1: float = 2126.0           # specific feed force at h = 1 um (N/mm^2)
-    mf: float = -0.168
-
-
-@dataclass(frozen=True)
-class Forces:
-    """Forces summed over the engaged nose arc."""
-    Fc_N: float       # tangential cutting force
-    Fr_N: float       # radial (thrust) force -> deflects the workpiece
-    Fa_N: float       # axial (feed direction) force
-    h_avg_mm: float   # mean uncut chip thickness over the arc
-    kappa_min: float
-    kappa_max: float
-
-
-@dataclass(frozen=True)
-class DeflectionResult:
-    ap_nom_mm: float
-    ap_true_mm: float
-    beam_mm: float        # workpiece bending at the tool
-    machine_mm: float     # machine/tool-holder compliance
-    forces: Forces        # evaluated at the converged true depth of cut
-    history_mm: list[float]   # total deflection at each pass
-    converged: bool
-    d_zero_mm: float      # final diameter with zero deflection
-    d_final_mm: float     # predicted final diameter
-
-    @property
-    def deflection_mm(self) -> float:
-        return self.beam_mm + self.machine_mm
 
 
 # ---------------------------------------------------------------- Part 1: beam
 
-def circular_I(d_mm: float) -> float:
+def circular_I(d: float) -> float:
     """Second moment of area of a solid round bar (mm^4)."""
-    return math.pi * d_mm**4 / 64
+    return math.pi * d**4 / 64
 
 
-def cantilever_deflection(F_N: float, L_mm: float, E_N_mm2: float, I_mm4: float) -> float:
-    """Tip deflection (mm) of a cantilever with a point load F at the free end."""
-    return F_N * L_mm**3 / (3 * E_N_mm2 * I_mm4)
+def cantilever_deflection(F: float, L: float, E: float, I: float) -> float:
+    """Tip deflection (mm) of a cantilever with a point load F at the free end (E in N/mm^2)."""
+    return F * L**3 / (3 * E * I)
 
 
 # ------------------------------------------------------------ Part 2: geometry
 
-def kappa_limits(rc_mm: float, f_mm: float, ap_mm: float) -> tuple[float, float]:
+def kappa_limits(rc: float, f: float, ap: float) -> tuple[float, float]:
     """Engaged nose-arc limits (rad): kappa_min from the feed, kappa_max from ap."""
-    if not 0 < ap_mm <= 2 * rc_mm:
+    if not 0 < ap <= 2 * rc:
         raise ValueError("ap must be in (0, 2*rc]")
-    k_min = -math.acos((rc_mm - f_mm**2 / (8 * rc_mm)) / rc_mm)
-    k_max = math.acos((rc_mm - ap_mm) / rc_mm)
+    k_min = -math.acos((rc - f**2 / (8 * rc)) / rc)
+    k_max = math.acos((rc - ap) / rc)
     return k_min, k_max
 
 
-def uncut_chip_thickness(kappa, rc_mm: float, f_mm: float):
+def uncut_chip_thickness(kappa, rc: float, f: float):
     """Uncut chip thickness h(kappa) in mm (homework formula)."""
     c = np.cos(kappa - np.pi / 2)
-    return rc_mm + f_mm * c - np.sqrt(rc_mm**2 + f_mm**2 * (c**2 - 1))
+    return rc + f * c - np.sqrt(rc**2 + f**2 * (c**2 - 1))
 
 
-def integrate_forces(inp: Inputs, ap_mm: float, dkappa: float | None = None) -> Forces:
-    """Sum dF = k(h) * h * ds over the engaged arc (ds = rc * dkappa)."""
-    if ap_mm <= 1e-9:
-        return Forces(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    k_min, k_max = kappa_limits(inp.rc_mm, inp.f_mm, ap_mm)
-    n = max(1, round((k_max - k_min) / (dkappa or inp.dkappa)))
+def integrate_forces(rc: float, f: float, ap: float, mat: dict[str, Any],
+                     dkappa: float = DKAPPA) -> dict[str, float]:
+    """Sum dF = k(h) * h * ds over the engaged arc (ds = rc * dkappa).
+
+    Returns Fc (tangential), Fr (radial), Fa (axial) in N and mean chip thickness h_avg in mm.
+    """
+    if ap <= 1e-9:
+        return dict(Fc=0.0, Fr=0.0, Fa=0.0, h_avg=0.0)
+    k_min, k_max = kappa_limits(rc, f, ap)
+    n = max(1, round((k_max - k_min) / dkappa))
     kappa = np.linspace(k_min, k_max, n + 1)      # grid includes both end points
-    ds_mm = inp.rc_mm * (k_max - k_min) / n       # arc length per element
-    h_mm = np.maximum(uncut_chip_thickness(kappa, inp.rc_mm, inp.f_mm), 1e-9)
-    h_um = h_mm * 1000                            # kc/kf are defined for h in um
-    dFc = inp.kc1 * h_um**inp.mc * h_mm * ds_mm
-    dFf = inp.kf1 * h_um**inp.mf * h_mm * ds_mm   # normal to the cutting edge
-    return Forces(
-        Fc_N=float(dFc.sum()),
-        Fr_N=float((np.cos(kappa) * dFf).sum()),
-        Fa_N=float((np.sin(kappa) * dFf).sum()),
-        h_avg_mm=float(h_mm.mean()),
-        kappa_min=k_min,
-        kappa_max=k_max,
-    )
+    ds = rc * (k_max - k_min) / n                 # arc length per element (mm)
+    h = np.maximum(uncut_chip_thickness(kappa, rc, f), 1e-9)   # mm
+    h_um = h * 1000                               # kc/kf are defined for h in um
+    dFc = mat["kc1"] * h_um ** mat["mc"] * h * ds
+    dFf = mat["kf1"] * h_um ** mat["mf"] * h * ds  # normal to the cutting edge
+    return dict(Fc=float(dFc.sum()),
+                Fr=float((np.cos(kappa) * dFf).sum()),
+                Fa=float((np.sin(kappa) * dFf).sum()),
+                h_avg=float(h.mean()))
 
 
 # ----------------------------------------------- Part 2: deflection + iteration
 
-def compliance_mm_per_N(inp: Inputs) -> tuple[float, float]:
-    """(beam, machine) radial compliance at the tool tip."""
-    beam = cantilever_deflection(1.0, inp.L_mm, inp.E_GPa * 1000, circular_I(inp.d_mm))
-    return beam, 1.0 / inp.k_machine_N_mm
+def compliance(p: dict[str, Any], mat: dict[str, Any]) -> tuple[float, float]:
+    """(beam, machine) radial compliance at the tool tip, mm/N."""
+    beam = cantilever_deflection(1.0, p["L"], mat["E_GPa"] * 1000, circular_I(p["d"]))
+    return beam, 1.0 / p["k_machine"]
 
 
-def solve_deflection(inp: Inputs, relax: float = 0.5, max_iter: int = 200,
-                     tol: float = 1e-6) -> DeflectionResult:
+def solve_deflection(p: dict[str, Any], mat: dict[str, Any], relax: float = 0.5,
+                     max_iter: int = 200, tol: float = 1e-6) -> dict[str, Any]:
     """Iterate ap_true = ap_nom - deflection(F_radial(ap_true)).
 
     relax=1 is the workbook's plain successive substitution (it oscillates
     towards the answer); 0.5 damps that and reaches the same fixed point.
     """
-    c_beam, c_mach = compliance_mm_per_N(inp)
-    ap, history, converged = inp.ap_mm, [], False
+    c_beam, c_mach = compliance(p, mat)
+    ap, history, converged = p["ap"], [], False
     for _ in range(max_iter):
-        defl = integrate_forces(inp, ap).Fr_N * (c_beam + c_mach)
+        defl = integrate_forces(p["rc"], p["f"], ap, mat)["Fr"] * (c_beam + c_mach)
         history.append(defl)
-        new = ap + relax * (max(inp.ap_mm - defl, 0.0) - ap)
+        new = ap + relax * (max(p["ap"] - defl, 0.0) - ap)
         converged = abs(new - ap) < tol
         ap = new
         if converged:
             break
-    F = integrate_forces(inp, ap)
-    return DeflectionResult(
-        ap_nom_mm=inp.ap_mm, ap_true_mm=ap,
-        beam_mm=F.Fr_N * c_beam, machine_mm=F.Fr_N * c_mach,
-        forces=F, history_mm=history, converged=converged,
-        d_zero_mm=inp.d_mm - 2 * inp.ap_mm,      # ap is radial -> diameter drops by 2*ap
-        d_final_mm=inp.d_mm - 2 * ap,
-    )
+    F = integrate_forces(p["rc"], p["f"], ap, mat)
+    beam, machine = F["Fr"] * c_beam, F["Fr"] * c_mach
+    return dict(F, ap_nom=p["ap"], ap_true=ap, beam=beam, machine=machine,
+                deflection=beam + machine, history=history, converged=converged,
+                d_zero=p["d"] - 2 * p["ap"],     # ap is radial -> diameter drops by 2*ap
+                d_final=p["d"] - 2 * ap)
 
 
-def solve_nominal_ap(inp: Inputs, d_target_mm: float, tol: float = 1e-5,
-                     max_iter: int = 200) -> tuple[float, DeflectionResult]:
+def solve_nominal_ap(p: dict[str, Any], mat: dict[str, Any], d_target: float,
+                     tol: float = 1e-5, max_iter: int = 200) -> tuple[float, dict[str, Any]]:
     """Nominal ap to command so the deflected cut lands on d_target (replaces Goal Seek)."""
-    ap_target = (inp.d_mm - d_target_mm) / 2
+    ap_target = (p["d"] - d_target) / 2
     ap_nom = ap_target
-    res = solve_deflection(replace(inp, ap_mm=ap_nom))
+    res = solve_deflection({**p, "ap": ap_nom}, mat)
     for _ in range(max_iter):
-        err = ap_target - res.ap_true_mm
+        err = ap_target - res["ap_true"]
         if abs(err) < tol:
             break
         ap_nom += err        # add back what the tool failed to remove
-        res = solve_deflection(replace(inp, ap_mm=ap_nom))
+        res = solve_deflection({**p, "ap": ap_nom}, mat)
     return ap_nom, res
 
 
 # --------------------------------------------------------------------- report
 
-def report(inp: Inputs, res: DeflectionResult) -> str:
-    F = res.forces
-    rpm = 1000 * inp.vc_m_min / (math.pi * inp.d_mm)
-    torque_Nm = F.Fc_N * inp.d_mm / 2 / 1000
-    power_W = torque_Nm * 2 * math.pi * rpm / 60
-    Ra_um = inp.f_mm**2 / (32 * inp.rc_mm) * 1000 * 4 / 3   # workbook's 4/3 factor
+def report(p: dict[str, Any], mat: dict[str, Any], res: dict[str, Any]) -> str:
+    rpm = 1000 * p["vc"] / (math.pi * p["d"])
+    torque = res["Fc"] * p["d"] / 2 / 1000                      # N*m
+    power = torque * 2 * math.pi * rpm / 60                     # W
+    Ra = p["f"]**2 / (32 * p["rc"]) * 1000 * 4 / 3              # um, workbook's 4/3 factor
+    k_min, k_max = kappa_limits(p["rc"], p["f"], res["ap_true"])
     lines = [
-        f"material {inp.material} (E={inp.E_GPa:g} GPa)",
-        f"rc={inp.rc_mm} mm  f={inp.f_mm} mm/rev  d={inp.d_mm} mm  L={inp.L_mm} mm (L/D={inp.L_mm / inp.d_mm:.1f})",
-        f"nominal ap        {res.ap_nom_mm:.4f} mm",
-        f"true ap           {res.ap_true_mm:.4f} mm  ({res.ap_true_mm / res.ap_nom_mm:.0%} of nominal)"
-        + ("" if res.converged else "  [NOT CONVERGED]"),
-        f"deflection        {res.deflection_mm * 1000:.1f} um  (beam {res.beam_mm * 1000:.1f} + machine {res.machine_mm * 1000:.1f})",
-        f"zero-defl. dia.   {res.d_zero_mm:.4f} mm",
-        f"predicted dia.    {res.d_final_mm:.4f} mm  (oversize {1000 * (res.d_final_mm - res.d_zero_mm):.1f} um)",
-        f"forces            Fc {F.Fc_N:.1f} N   Fradial {F.Fr_N:.1f} N   Faxial {F.Fa_N:.1f} N",
-        f"engaged arc       {math.degrees(F.kappa_min):.2f} to {math.degrees(F.kappa_max):.2f} deg, h_avg {F.h_avg_mm * 1000:.1f} um",
-        f"rpm {rpm:.0f}  torque {torque_Nm:.2f} N*m  power {power_W:.0f} W",
-        f"kinematic Ra {Ra_um:.2f} um",
+        f"material {mat['name']} (E={mat['E_GPa']:g} GPa)",
+        f"rc={p['rc']} mm  f={p['f']} mm/rev  d={p['d']} mm  L={p['L']} mm (L/D={p['L'] / p['d']:.1f})",
+        f"nominal ap        {res['ap_nom']:.4f} mm",
+        f"true ap           {res['ap_true']:.4f} mm  ({res['ap_true'] / res['ap_nom']:.0%} of nominal)"
+        + ("" if res["converged"] else "  [NOT CONVERGED]"),
+        f"deflection        {res['deflection'] * 1000:.1f} um  (beam {res['beam'] * 1000:.1f} + machine {res['machine'] * 1000:.1f})",
+        f"zero-defl. dia.   {res['d_zero']:.4f} mm",
+        f"predicted dia.    {res['d_final']:.4f} mm  (oversize {1000 * (res['d_final'] - res['d_zero']):.1f} um)",
+        f"forces            Fc {res['Fc']:.1f} N   Fradial {res['Fr']:.1f} N   Faxial {res['Fa']:.1f} N",
+        f"engaged arc       {math.degrees(k_min):.2f} to {math.degrees(k_max):.2f} deg, h_avg {res['h_avg'] * 1000:.1f} um",
+        f"rpm {rpm:.0f}  torque {torque:.2f} N*m  power {power:.0f} W",
+        f"kinematic Ra {Ra:.2f} um",
     ]
-    if inp.material == "Ti-6Al-4V":   # Sandvik constants are Ti-6Al-4V only
-        sandvik_N = 2300 * F.h_avg_mm**-0.15 * inp.f_mm * res.ap_true_mm
-        lines.append(f"Sandvik Fc check {sandvik_N:.1f} N")
-    if res.deflection_mm > 0.1 * F.h_avg_mm:
+    if mat["name"] == "Ti-6Al-4V":   # Sandvik constants are Ti-6Al-4V only
+        lines.append(f"Sandvik Fc check {2300 * res['h_avg']**-0.15 * p['f'] * res['ap_true']:.1f} N")
+    if res["deflection"] > 0.1 * res["h_avg"]:
         lines.append("WARNING: deflection > 10% of average chip thickness (chatter risk)")
-    if not 0.1 * inp.rc_mm <= inp.ap_mm <= inp.rc_mm / 3:
+    if not 0.1 * p["rc"] <= p["ap"] <= p["rc"] / 3:
         lines.append("note: ap outside the 1/10-1/3 of rc finishing guideline")
     return "\n".join(lines)
 
 
-def plot(inp: Inputs, res: DeflectionResult) -> None:
+def plot(p: dict[str, Any], mat: dict[str, Any], res: dict[str, Any]) -> None:
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(1, 3, figsize=(14, 4))
-    F = res.forces
-    kappa = np.linspace(F.kappa_min, F.kappa_max, 200)
-    ax[0].plot(np.degrees(kappa), uncut_chip_thickness(kappa, inp.rc_mm, inp.f_mm) * 1000)
+    k_min, k_max = kappa_limits(p["rc"], p["f"], res["ap_true"])
+    kappa = np.linspace(k_min, k_max, 200)
+    ax[0].plot(np.degrees(kappa), uncut_chip_thickness(kappa, p["rc"], p["f"]) * 1000)
     ax[0].set(xlabel="kappa (deg)", ylabel="uncut chip thickness (um)", title="Chip thickness over engaged arc")
 
-    ax[1].plot(range(1, len(res.history_mm) + 1), np.array(res.history_mm) * 1000, "o-")
+    ax[1].plot(range(1, len(res["history"]) + 1), np.array(res["history"]) * 1000, "o-")
     ax[1].set(xlabel="iteration", ylabel="deflection (um)", title="Deflection convergence")
 
     noms = np.linspace(0.05, 0.5, 30)
-    trues = [solve_deflection(replace(inp, ap_mm=a)).ap_true_mm for a in noms]
+    trues = [solve_deflection({**p, "ap": a}, mat)["ap_true"] for a in noms]
     ax[2].plot(noms, trues, label="predicted")
     ax[2].plot(noms, noms, "--", label="no deflection")
     ax[2].set(xlabel="nominal ap (mm)", ylabel="true ap (mm)", title="True vs nominal depth of cut")
@@ -235,29 +195,27 @@ def plot(inp: Inputs, res: DeflectionResult) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
-    d = Inputs()
-    for name, default in [("rc", d.rc_mm), ("f", d.f_mm), ("ap", d.ap_mm), ("d", d.d_mm),
-                          ("L", d.L_mm), ("k", d.k_machine_N_mm)]:
-        p.add_argument(f"--{name}", type=float, default=default)
-    p.add_argument("--E", type=float, help="Young's modulus (GPa); overrides the material's")
-    p.add_argument("--material", choices=MATERIALS, default="al6061")
-    p.add_argument("--target", type=float, help="desired final diameter (mm); solves for nominal ap")
-    p.add_argument("--plot", action="store_true")
-    a = p.parse_args()
-    mat = MATERIALS[a.material]
-    inp = replace(d, **{**mat, **({"E_GPa": a.E} if a.E else {})}, rc_mm=a.rc, f_mm=a.f, ap_mm=a.ap, d_mm=a.d,
-                  L_mm=a.L, k_machine_N_mm=a.k)
+    parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
+    for name in DEFAULTS:
+        if name != "vc":
+            parser.add_argument(f"--{name}", type=float, default=DEFAULTS[name])
+    parser.add_argument("--material", choices=MATERIALS, default="al6061")
+    parser.add_argument("--E", type=float, help="Young's modulus (GPa); overrides the material's")
+    parser.add_argument("--target", type=float, help="desired final diameter (mm); solves for nominal ap")
+    parser.add_argument("--plot", action="store_true")
+    a = parser.parse_args()
+    p = {**DEFAULTS, **{k: getattr(a, k) for k in DEFAULTS if k != "vc"}}
+    mat = {**MATERIALS[a.material], **({"E_GPa": a.E} if a.E else {})}
 
     if a.target is not None:
-        ap_nom, res = solve_nominal_ap(inp, a.target)
-        inp = replace(inp, ap_mm=ap_nom)
+        ap_nom, res = solve_nominal_ap(p, mat, a.target)
+        p["ap"] = ap_nom
         print(f"target diameter {a.target} mm -> command nominal ap = {ap_nom:.4f} mm\n")
     else:
-        res = solve_deflection(inp)
-    print(report(inp, res))
+        res = solve_deflection(p, mat)
+    print(report(p, mat, res))
     if a.plot:
-        plot(inp, res)
+        plot(p, mat, res)
 
 
 if __name__ == "__main__":

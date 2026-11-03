@@ -9,6 +9,8 @@ example workbook live in `ME699_context/` (start at `INDEX.md`).
 - Comment code, but not excessively.
 - CPU-only NumPy; no GPU/CUDA, no solver libraries. Physics must come from the course context.
 - Units: mm, N, N/mm^2, rad. Only convert to um inside the kc/kf power laws.
+- No dataclasses/classes: inputs are plain dicts (`p` process, `mat` material), results are plain dicts.
+- Notebooks: `deflection_model.ipynb` (inputs + model cell), `deflection_model_expanded.ipynb` (one cell per model step, plain NumPy, cross-checked against the module).
 - Tooling: pyright (Python LSP) and Context7 MCP (`.mcp.json`) are installed.
 
 ## Commands
