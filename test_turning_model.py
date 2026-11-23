@@ -1,5 +1,6 @@
 """Regression tests against the course workbooks plus basic physics checks."""
 import math
+from typing import Any
 
 import pytest
 
@@ -88,18 +89,18 @@ def test_diameters():
     assert res["d_final"] > res["d_zero"]  # deflection leaves material behind
 
 
-def test_default_material_is_al6061():
-    assert tm.MATERIALS["al6061"]["E_GPa"] == 70.0
+def test_default_material_is_al7075():
+    assert tm.MATERIALS["al7075"]["E_GPa"] == 71.7
 
 
-def test_al6061_homework_case_is_sane():
-    mat = tm.MATERIALS["al6061"]
+def test_al7075_homework_case_is_sane():
+    mat = tm.MATERIALS["al7075"]
     res = tm.solve_deflection(tm.DEFAULTS, mat)
     assert res["converged"]
     assert 0 < res["ap_true"] < res["ap_nom"]
     # lower modulus: beam compliance rises by E_Ti/E_Al vs the Ti workpiece
     ti = tm.compliance(tm.DEFAULTS, TI64)[0]
-    assert tm.compliance(tm.DEFAULTS, mat)[0] == pytest.approx(ti * 114 / 70)
+    assert tm.compliance(tm.DEFAULTS, mat)[0] == pytest.approx(ti * 114 / 71.7)
 
 
 def test_optimiser_hits_target_diameter():
@@ -107,3 +108,95 @@ def test_optimiser_hits_target_diameter():
     ap_nom, res = tm.solve_nominal_ap(SHARP_P, SHARP_MAT, target)
     assert res["d_final"] == pytest.approx(target, abs=1e-4)
     assert ap_nom > (SHARP_P["d"] - target) / 2  # must over-command to cover deflection
+
+
+# ------------------------------------------------------ Part 3 additions
+AL = tm.MATERIALS["al7075"]
+P3 = tm.PART3
+PLAN: dict[str, Any] = dict(f_rough=0.1, f_finish=0.05, rpm=2000.0)
+
+
+def test_stepped_beam_limits():
+    E, L = 71_700.0, 100.0
+    uniform = 1 / (3 * E * tm.circular_I(8.0)) * L**3
+    assert tm.compliance({**P3, "L": L, "d": 8.0, "d_bar": 8.0}, AL)[0] == pytest.approx(uniform)
+    # turned section as long as the whole overhang -> uniform bar of the turned diameter
+    assert tm.compliance({**P3, "L": L, "d": 8.0, "d_bar": 9.5, "Ls": L}, AL)[0] == pytest.approx(uniform)
+    # a short thin tip on a fat bar is stiffer than a thin bar all the way
+    short = tm.compliance({**P3, "L": L, "d": 8.0, "d_bar": 9.5, "Ls": 10.0}, AL)[0]
+    assert uniform > short > L**3 / (3 * E * tm.circular_I(9.5))
+
+
+def test_edge_radius_cutoff_and_ploughing():
+    base = tm.integrate_forces(0.8, 0.05, 0.05, AL)
+    cut = tm.integrate_forces(0.8, 0.05, 0.05, AL, re=0.01)         # h < h_min elements do not cut
+    assert 0.9 * base["Fc"] < cut["Fc"] <= base["Fc"]
+    plough = tm.integrate_forces(0.8, 0.05, 0.05, AL, re=0.01, pl=0.5)
+    assert plough["Fr"] > cut["Fr"]
+    assert tm.integrate_forces(0.8, 0.05, 0.05, AL, re=0.01, pl=0.0)["Fr"] == pytest.approx(cut["Fr"])
+
+
+def test_kinematic_ra_matches_workbook():
+    assert tm.kinematic_ra(0.3, 0.8) == pytest.approx(4.6875)       # Nose Radius workbook C15
+
+
+def test_flash_temperature_limits():
+    kw: dict[str, Any] = dict(mat=AL, b=0.24, w=0.1, beta=0.2)
+    lo = tm.flash_temperature(Fc=10.0, vc=60.0, **kw)
+    assert lo["dT"] > 0 and lo["Pe"] > 0
+    assert tm.flash_temperature(Fc=20.0, vc=60.0, **kw)["dT"] == pytest.approx(2 * lo["dT"], rel=1e-6)
+    # fast source: Jaeger asymptote dT = 2 q l / (K sqrt(pi L))
+    hi = tm.flash_temperature(Fc=10.0, vc=60000.0, **kw)
+    q, l, K = hi["q"], 0.05e-3, AL["k_th"]
+    assert hi["dT"] == pytest.approx(2 * q * l / (K * math.sqrt(math.pi * hi["L"])), rel=0.03)
+    # slow source: stationary band, finite and larger than the fast-source scaling would give
+    assert math.isfinite(tm.flash_temperature(Fc=10.0, vc=0.01, **kw)["dT"])
+
+
+def test_plan_meets_tolerance_without_undersize():
+    plan = tm.plan_passes(P3, AL, **PLAN)
+    s = plan["summary"]
+    assert s["in_tolerance"]
+    assert abs(s["d_final"] - P3["d_target"]) <= P3["tol"]
+    diam = [r["d_after"] for r in plan["passes"]]
+    assert all(a >= b for a, b in zip(diam, diam[1:]))              # monotone: material only leaves
+    assert min(diam) >= P3["d_target"] - 1e-9                       # set point at target -> never undersize
+    assert s["time_s"] > 0 and s["n_passes"] == len(plan["passes"])
+
+
+def test_plan_fixed_pass_count_and_sensitivity():
+    nom = tm.plan_passes(P3, AL, **PLAN)
+    n = nom["summary"]["n_passes"]
+    assert tm.plan_passes(P3, AL, n_fixed=n - 2, **PLAN)["summary"]["n_passes"] == n - 2
+    hi = tm.plan_passes(P3, {**AL, "kc1": AL["kc1"] * 1.2, "kf1": AL["kf1"] * 1.2}, n_fixed=n, **PLAN)
+    assert hi["summary"]["d_final"] >= nom["summary"]["d_final"]    # more force -> more material left
+    rows = tm.sensitivity(P3, AL, rel=0.2, **PLAN)
+    assert {r["case"] for r in rows} >= {"force +20%", "force -20%"}
+
+
+def test_calibration_recovers_force_scale():
+    truth = {**AL, "kc1": AL["kc1"] * 1.25, "kf1": AL["kf1"] * 0.8}
+    data = []
+    for f, ap in [(0.05, 0.05), (0.1, 0.1), (0.15, 0.2)]:
+        F = tm._forces({**P3, "f": f}, ap, truth)
+        data.append(dict(f=f, ap=ap, Fc=F["Fc"], Fr=F["Fr"]))
+    fit = tm.calibrate_forces(P3, AL, data)
+    assert fit["kc1"] == pytest.approx(truth["kc1"], rel=1e-6)
+    assert fit["kf1"] == pytest.approx(truth["kf1"], rel=1e-6)
+    err = tm.compare(dict(Fc=110.0), dict(Fc=100.0))
+    assert err["Fc"] == pytest.approx(10.0)
+
+
+def test_strategy_search_respects_constraints():
+    best = tm.search_strategy(P3, AL)
+    s = best["summary"]
+    assert s["in_tolerance"] and P3["ra_band"][0] <= s["Ra"] <= P3["ra_band"][1]
+    assert s["T_max"] < tm.T_CRIT_ALUMINIUM
+
+
+def test_solver_converges_with_edge_radius_cutoff():
+    # hard h_min cutoff makes F(ap) jumpy; the fixed-point loop alone cycles here
+    for f, ap in [(0.1, 0.01), (0.05, 0.7938)]:
+        res = tm.solve_deflection({**P3, "f": f, "ap": ap}, AL)
+        assert res["converged"]
+        assert abs(res["ap_true"] + res["deflection"] - ap) < 2e-3   # residual below 2 um
