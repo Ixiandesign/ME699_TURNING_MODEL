@@ -17,6 +17,7 @@ the method; lathe settings, thermal constants and the critical temperature are p
 - Tooling: pyright (Python LSP) and Context7 MCP (`.mcp.json`) are installed.
 
 ## Commands
+- `.\setup_venv.ps1` creates `.venv` (requirements + its own Tcl/Tk copy; `sitecustomize` points Tcl/Tk at it, overriding the machine-wide `TCL_LIBRARY`/`TK_LIBRARY` that point at another Python). Then use `.\.venv\Scripts\python` for everything below.
 - `python -m pytest -q`
 - `python turning_model.py [--plot]`
 - `python turning_model.py --part3 [--f-rough 0.1 --f-finish 0.05 --rpm 2000]`

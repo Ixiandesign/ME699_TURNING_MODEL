@@ -243,15 +243,17 @@ def plot_plan(fig: Figure, p: dict[str, Any], mat: dict[str, Any], plan: dict[st
 # ------------------------------------------------------------------- window
 
 def use_own_tcl() -> None:
-    """Point Tcl/Tk at this interpreter's own libraries.
+    """Point Tcl/Tk at this interpreter's own libraries: the venv's copy if it has one, else the base install's.
 
     A leftover TCL_LIBRARY / TK_LIBRARY from another Python install (different Tcl version)
     makes tk.Tk() fail, so the window never opens. Call before creating the root window.
     """
     for var, prefix in (("TCL_LIBRARY", "tcl8."), ("TK_LIBRARY", "tk8.")):
-        found = sorted(glob.glob(os.path.join(sys.base_prefix, "tcl", prefix + "*")))
-        if found:
-            os.environ[var] = found[-1]
+        for root in (sys.prefix, sys.base_prefix):               # sys.prefix is the venv inside one
+            found = sorted(glob.glob(os.path.join(root, "tcl", prefix + "*")))
+            if found:
+                os.environ[var] = found[-1]
+                break
 
 
 def build_ui(root: Any) -> dict[str, Any]:

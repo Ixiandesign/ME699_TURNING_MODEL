@@ -26,8 +26,10 @@ material table (pick a preset, then edit any value); press **Run** or Enter.
   table and six figures: convergence to the target, commanded vs true depth, forces, deflection, temperature and
   chip thickness per pass.
 - Bad input (a non-number, an out-of-range depth) is reported in the text box instead of crashing.
-- If `TCL_LIBRARY` / `TK_LIBRARY` point at another Python install, the UI overrides them for its own process
-  (`use_own_tcl`); your environment variables are not changed.
+- Tcl/Tk: run `.\setup_venv.ps1` once, then `.\.venv\Scripts\python turning_ui.py`. The venv holds its own copy of
+  Tcl/Tk and a `sitecustomize.py` that points every interpreter in it at that copy, so a machine-wide
+  `TCL_LIBRARY` / `TK_LIBRARY` from another Python install (which breaks `tk.Tk()`) is ignored. Outside the venv,
+  `use_own_tcl` applies the same override to the UI process. Your environment variables are not changed.
 
 ## The deflection paradox and its solution
 

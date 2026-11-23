@@ -281,3 +281,16 @@ def test_ui_ignores_stale_tcl_environment(monkeypatch):
     ui.use_own_tcl()
     assert os.path.isfile(os.path.join(os.environ["TCL_LIBRARY"], "init.tcl"))
     assert os.path.isdir(os.environ["TK_LIBRARY"])
+
+
+def test_ui_prefers_venv_tcl_over_base(monkeypatch, tmp_path):
+    import os
+    import sys
+
+    import turning_ui as ui
+    for name in ("tcl8.6", "tk8.6"):
+        (tmp_path / "tcl" / name).mkdir(parents=True)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))               # a venv with its own Tcl/Tk copy
+    ui.use_own_tcl()
+    assert os.environ["TCL_LIBRARY"] == str(tmp_path / "tcl" / "tcl8.6")
+    assert os.environ["TK_LIBRARY"] == str(tmp_path / "tcl" / "tk8.6")
