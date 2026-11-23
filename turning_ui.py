@@ -1,8 +1,9 @@
 """Desktop UI for turning_model.py (tkinter + matplotlib). Run: uv run turning_ui.py
 
-Two tabs share one editable material table:
-  Single cut  - forces, deflection, true vs nominal depth of cut (the workbook + deflection model)
-  Part 3 plan - multi-pass plan for the exam bar, Ra, temperature, cycle time, sensitivity
+The exam setup is fixed in the model (AA7075-T6 bar, tool, target diameter, tolerance, Ra band), so the forms
+only hold what the process designer chooses: feeds, spindle speed, depth of cut and the model assumptions.
+  Single cut  - forces, deflection, true vs nominal depth of cut on the exam bar
+  Part 3 plan - multi-pass plan: pass table, Ra, temperature, cycle time, sensitivity
 Parsing, running and plotting are plain functions (no tkinter), so they are testable headless.
 """
 from __future__ import annotations
@@ -17,49 +18,46 @@ from matplotlib.figure import Figure
 
 import turning_model as tm
 
-# (key, label, default text). Defaults come straight from the model's dicts.
+MAT = tm.MATERIALS["al7075"]          # fixed: AA7075-T6 (not editable in the UI)
+
+# (key, label, default text) for the editable inputs only.
 SINGLE_FIELDS = [
-    ("rc", "Nose radius rc (mm)", str(tm.DEFAULTS["rc"])),
-    ("re", "Edge radius re (mm, 0 = sharp)", str(tm.DEFAULTS["re"])),
-    ("pl", "Ploughing scale pl (0 = off)", str(tm.DEFAULTS["pl"])),
-    ("f", "Feed f (mm/rev)", str(tm.DEFAULTS["f"])),
+    ("f", "Feed f (mm/rev)", "0.05"),
     ("ap", "Nominal radial depth ap (mm)", str(tm.DEFAULTS["ap"])),
-    ("d", "Workpiece diameter d (mm)", str(tm.DEFAULTS["d"])),
-    ("L", "Overhang length L (mm)", str(tm.DEFAULTS["L"])),
-    ("k_machine", "Machine stiffness (N/mm)", str(tm.DEFAULTS["k_machine"])),
-    ("vc", "Cutting speed vc (m/min)", str(tm.DEFAULTS["vc"])),
+    ("rpm", "Spindle speed (rpm)", "2000"),
+    ("k_machine", "Machine stiffness (N/mm)", str(tm.PART3["k_machine"])),
+    ("pl", "Ploughing scale pl (0 = off)", str(tm.PART3["pl"])),
     ("target", "Target diameter (mm, optional)", ""),
 ]
 _list = lambda xs: ", ".join(f"{x:g}" for x in xs)  # noqa: E731
 PART3_FIELDS = [
     ("mode", "Mode (search / fixed)", "search"),
-    ("d", "Start diameter d (mm)", str(tm.PART3["d"])),
-    ("d_bar", "Un-turned bar diameter (mm)", str(tm.PART3["d_bar"])),
-    ("L", "Overhang length L (mm)", str(tm.PART3["L"])),
-    ("Ls", "Turned length Ls (mm)", str(tm.PART3["Ls"])),
-    ("rc", "Nose radius rc (mm)", str(tm.PART3["rc"])),
-    ("re", "Edge radius re (mm)", str(tm.PART3["re"])),
-    ("pl", "Ploughing scale pl (0 = off)", str(tm.PART3["pl"])),
-    ("k_machine", "Machine stiffness (N/mm)", str(tm.PART3["k_machine"])),
-    ("d_target", "Target diameter (mm)", str(tm.PART3["d_target"])),
-    ("tol", "Tolerance +/- (mm)", str(tm.PART3["tol"])),
-    ("ra_lo", "Ra minimum (um)", str(tm.PART3["ra_band"][0])),
-    ("ra_hi", "Ra maximum (um)", str(tm.PART3["ra_band"][1])),
-    ("beta", "Heat fraction into workpiece", str(tm.PART3["beta"])),
-    ("w_contact", "Thermal contact width (mm)", str(tm.PART3["w_contact"])),
-    ("allow", "Rough/finish stock threshold (mm)", "0.05"),
-    ("margin", "Stop at margin x tolerance", "0.5"),
     ("rpms", "Search: spindle speeds (rpm)", _list(tm.LATHE["rpm"])),
     ("feeds", "Search: feeds (mm/rev)", _list(tm.LATHE["feed"])),
     ("f_rough", "Fixed: roughing feed (mm/rev)", "0.1"),
     ("f_finish", "Fixed: finishing feed (mm/rev)", "0.05"),
     ("rpm", "Fixed: spindle speed (rpm)", "2000"),
+    ("k_machine", "Machine stiffness (N/mm)", str(tm.PART3["k_machine"])),
+    ("pl", "Ploughing scale pl (0 = off)", str(tm.PART3["pl"])),
+    ("beta", "Heat fraction into workpiece", str(tm.PART3["beta"])),
+    ("w_contact", "Thermal contact width (mm)", str(tm.PART3["w_contact"])),
+    ("allow", "Rough/finish stock threshold (mm)", "0.05"),
+    ("margin", "Stop at margin x tolerance", "0.5"),
 ]
-MATERIAL_FIELDS = [
-    ("E_GPa", "Young's modulus E (GPa)"), ("kc1", "kc1 (N/mm^2)"), ("mc", "mc"),
-    ("kf1", "kf1 (N/mm^2)"), ("mf", "mf"), ("sigma_y", "Yield strength (MPa)"),
-    ("rho", "Density (kg/m^3)"), ("cp", "Specific heat (J/kg/K)"), ("k_th", "Conductivity (W/m/K)"),
-]
+
+
+def fixed_setup() -> str:
+    """Read-only description of the fixed exam setup, shown above the forms."""
+    P = tm.PART3
+    return "\n".join([
+        f"Fixed setup ({MAT['name']}):",
+        f"  bar {P['d']:g} mm dia, {P['L']:g} mm long,",
+        f"  {P['Ls']:g} mm turned section at the free end",
+        f"  target {P['d_target']:g} mm +/- {P['tol']:g} mm",
+        f"  Ra {P['ra_band'][0]:g}-{P['ra_band'][1]:g} um",
+        f"  nose radius {P['rc']:g} mm, edge radius {P['re'] * 1000:g} um",
+        "  rake/lead 0 deg, flank 7 deg (flank not modelled)",
+    ])
 
 
 # ------------------------------------------------------------------ parsing
@@ -83,23 +81,11 @@ def _numbers(vals: dict[str, str], key: str, label: str) -> tuple[float, ...]:
     return out
 
 
-def material_strings(mat: dict[str, Any]) -> dict[str, str]:
-    """Material numbers as entry text."""
-    return {k: str(float(mat[k])) for k, _ in MATERIAL_FIELDS}
-
-
-def parse_material(preset: str, vals: dict[str, str]) -> dict[str, Any]:
-    """Preset material with the edited numbers applied."""
-    mat = dict(tm.MATERIALS[preset])
-    for key, label in MATERIAL_FIELDS:
-        mat[key] = _num(vals, key, label)
-    return mat
-
-
 def parse_single(vals: dict[str, str]) -> tuple[dict[str, Any], float | None]:
-    """Process dict for the single-cut tab, and the optional target diameter."""
+    """Process dict for the single-cut tab (exam bar and tool), and the optional target diameter."""
     labels = {k: lab for k, lab, _ in SINGLE_FIELDS}
-    p = {**tm.DEFAULTS, **{k: _num(vals, k, labels[k]) for k in tm.DEFAULTS}}
+    p = {**tm.PART3, **{k: _num(vals, k, labels[k]) for k in ("f", "ap", "k_machine", "pl")}}
+    p["vc"] = np.pi * p["d"] * _num(vals, "rpm", labels["rpm"]) / 1000.0     # m/min from rpm
     target = _num(vals, "target", labels["target"]) if vals.get("target", "").strip() else None
     return p, target
 
@@ -107,9 +93,7 @@ def parse_single(vals: dict[str, str]) -> tuple[dict[str, Any], float | None]:
 def parse_part3(vals: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
     """Process dict for the exam bar, and the plan settings (mode, feeds, rpm lists...)."""
     labels = {k: lab for k, lab, _ in PART3_FIELDS}
-    keys = ["d", "d_bar", "L", "Ls", "rc", "re", "pl", "k_machine", "d_target", "tol", "beta", "w_contact"]
-    p = {**tm.PART3, **{k: _num(vals, k, labels[k]) for k in keys},
-         "ra_band": (_num(vals, "ra_lo", labels["ra_lo"]), _num(vals, "ra_hi", labels["ra_hi"]))}
+    p = {**tm.PART3, **{k: _num(vals, k, labels[k]) for k in ("k_machine", "pl", "beta", "w_contact")}}
     cfg: dict[str, Any] = dict(mode=vals["mode"].strip(), allow=_num(vals, "allow", labels["allow"]),
                                margin=_num(vals, "margin", labels["margin"]))
     if cfg["mode"] == "search":
@@ -268,17 +252,6 @@ def build_ui(root: Any) -> dict[str, Any]:
     notebook = ttk.Notebook(root)
     notebook.pack(fill="both", expand=True)
 
-    # material table shared by both tabs (same StringVars, so an edit shows up everywhere)
-    preset = tk.StringVar(value="al7075")
-    mat_vars = {k: tk.StringVar(value=v) for k, v in material_strings(tm.MATERIALS["al7075"]).items()}
-
-    def load_preset(*_: Any) -> None:
-        for k, v in material_strings(tm.MATERIALS[preset.get()]).items():
-            mat_vars[k].set(v)
-
-    def material() -> dict[str, Any]:
-        return parse_material(preset.get(), {k: v.get() for k, v in mat_vars.items()})
-
     def make_tab(title: str, fields: list[tuple[str, str, str]], run: Any) -> dict[str, Any]:
         tab = ttk.Frame(notebook)
         notebook.add(tab, text=title)
@@ -286,16 +259,8 @@ def build_ui(root: Any) -> dict[str, Any]:
         form.pack(side="left", fill="y", padx=8, pady=8)
         vars_: dict[str, tk.StringVar] = {}
         r = 0
-        ttk.Label(form, text="Material").grid(row=r, column=0, sticky="w")
-        box = ttk.Combobox(form, textvariable=preset, values=list(tm.MATERIALS), width=14, state="readonly")
-        box.grid(row=r, column=1)
-        box.bind("<<ComboboxSelected>>", load_preset)
-        for key, label in MATERIAL_FIELDS:
-            r += 1
-            ttk.Label(form, text=label).grid(row=r, column=0, sticky="w")
-            ttk.Entry(form, textvariable=mat_vars[key], width=16).grid(row=r, column=1)
-        r += 1
-        ttk.Separator(form).grid(row=r, column=0, columnspan=2, sticky="ew", pady=4)
+        ttk.Label(form, text=fixed_setup(), font=("Consolas", 9), justify="left").grid(
+            row=r, column=0, columnspan=2, sticky="w", pady=(0, 6))
         for key, label, default in fields:
             r += 1
             vars_[key] = tk.StringVar(value=default)
@@ -332,7 +297,7 @@ def build_ui(root: Any) -> dict[str, Any]:
         try:
             vals = {k: v.get() for k, v in tab["vars"].items()}
             p, extra = parse(vals)
-            mat = material()
+            mat = dict(MAT)
             out = run(p, mat, extra)
             show(tab, out["text"])
             plot(tab["fig"], out["p"], mat, out.get("res") or out["plan"])

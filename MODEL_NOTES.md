@@ -15,13 +15,18 @@ Code: `turning_model.py` (`uv run turning_model.py --part3`). Demo: `deflection_
 
 ## UI
 
-`uv run turning_ui.py` opens a window with the same inputs and outputs as the CLI. Both tabs share one editable
-material table (pick a preset, then edit any value); press **Run** or Enter.
+`uv run turning_ui.py` opens a window with the same outputs as the CLI. The exam setup is fixed in the model and
+shown read-only on each tab: AA7075-T6 (all material properties), the 9.525 mm x 101.6 mm bar with the 6.35 mm turned
+section, target 7.9375 mm +/- 0.0127 mm, Ra 0.1-0.4 um, nose radius 0.8 mm, edge radius 10 um, rake/lead 0 deg
+(the 7 deg flank angle is listed but not used by the model). Only the process choices and model assumptions are
+editable; press **Run** or Enter.
 
-- **Single cut**: process inputs plus an optional target diameter. Shows the report and six figures: chip thickness
+- **Single cut**: feed, nominal depth, spindle speed, machine stiffness, ploughing scale and an optional target
+  diameter, applied to the exam bar. Shows the report and six figures: chip thickness
   vs kappa, element forces (dFc, dFf) and cumulative sums of Fc / Fradial / Faxial (the columns of the workbook's
   100-row table), deflection convergence, true vs nominal depth of cut, and the final forces.
-- **Part 3 plan**: the exam bar, tolerance, Ra band, thermal inputs and the lathe lists. Mode *search* finds the
+- **Part 3 plan**: the lathe lists (or fixed feeds and rpm), machine stiffness, ploughing scale, the thermal
+  placeholders (heat fraction, contact width) and the planner's thresholds. Mode *search* finds the
   fastest feasible setting (about 6 s), *fixed* runs the given feeds and rpm. Shows the pass table, the sensitivity
   table and six figures: convergence to the target, commanded vs true depth, forces, deflection, temperature and
   chip thickness per pass.

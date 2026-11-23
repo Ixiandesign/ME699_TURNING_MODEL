@@ -217,14 +217,23 @@ def test_force_profile_matches_workbook_table():
     assert prof["Fc_cum"][-1] == pytest.approx(tot["Fc"]) and prof["Fr_cum"][-1] == pytest.approx(tot["Fr"])
 
 
-def test_ui_parse_single_and_material():
+def test_ui_fixed_setup_not_editable():
+    import turning_ui as ui
+    keys = {k for k, _, _ in ui.SINGLE_FIELDS} | {k for k, _, _ in ui.PART3_FIELDS}
+    fixed = {"d", "d_bar", "L", "Ls", "rc", "re", "d_target", "tol", "ra_lo", "ra_hi",
+             "E_GPa", "kc1", "mc", "kf1", "mf", "sigma_y", "rho", "cp", "k_th"}
+    assert not keys & fixed                                              # exam geometry and 7075 are fixed
+    assert ui.MAT is tm.MATERIALS["al7075"]
+    assert "9.525" in ui.fixed_setup() and "7.9375" in ui.fixed_setup() and "flank 7" in ui.fixed_setup()
+
+
+def test_ui_parse_single():
     import turning_ui as ui
     vals = {k: d for k, _, d in ui.SINGLE_FIELDS}
     p, target = ui.parse_single(vals)
-    assert p["rc"] == tm.DEFAULTS["rc"] and p["L"] == tm.DEFAULTS["L"] and target is None
-    assert ui.parse_single({**vals, "target": "15.5"})[1] == 15.5
-    mat = ui.parse_material("al7075", {**ui.material_strings(AL), "E_GPa": "80"})
-    assert mat["E_GPa"] == 80.0 and mat["kc1"] == AL["kc1"] and mat["name"] == AL["name"]
+    assert p["rc"] == P3["rc"] and p["re"] == P3["re"] and p["L"] == P3["L"] and p["Ls"] == P3["Ls"]
+    assert p["vc"] == pytest.approx(math.pi * P3["d"] * 2000 / 1000) and target is None   # rpm -> vc
+    assert ui.parse_single({**vals, "target": "9.2"})[1] == 9.2
     with pytest.raises(ValueError, match="Feed"):
         ui.parse_single({**vals, "f": "abc"})
 
@@ -236,8 +245,8 @@ def test_ui_run_single_matches_model():
     out = ui.run_single(p, AL, target)
     assert out["res"]["ap_true"] == pytest.approx(tm.solve_deflection(p, AL)["ap_true"])
     assert "true ap" in out["text"]
-    out_t = ui.run_single(p, AL, 15.5)                                # target diameter -> solves nominal ap
-    assert out_t["res"]["d_final"] == pytest.approx(15.5, abs=1e-4) and "command nominal ap" in out_t["text"]
+    out_t = ui.run_single(p, AL, 9.2)                                 # target diameter -> solves nominal ap
+    assert out_t["res"]["d_final"] == pytest.approx(9.2, abs=1e-4) and "command nominal ap" in out_t["text"]
     with pytest.raises(ValueError):
         ui.run_single({**p, "ap": 5.0}, AL, None)                     # ap > 2*rc
 
@@ -260,7 +269,7 @@ def test_ui_plots_draw_expected_axes():
     from matplotlib.figure import Figure
 
     import turning_ui as ui
-    p = {**tm.DEFAULTS}
+    p = {**P3, "f": 0.05, "ap": 0.25}
     fig = Figure()
     ui.plot_single(fig, p, AL, tm.solve_deflection(p, AL))
     assert len(fig.axes) == 6
