@@ -1,4 +1,4 @@
-"""Desktop UI for turning_model.py (tkinter + matplotlib). Run: python turning_ui.py
+"""Desktop UI for turning_model.py (tkinter + matplotlib). Run: uv run turning_ui.py
 
 Two tabs share one editable material table:
   Single cut  - forces, deflection, true vs nominal depth of cut (the workbook + deflection model)

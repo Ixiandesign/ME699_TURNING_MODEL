@@ -1,7 +1,7 @@
 # Finish-turning model: how it works and why
 
 Model for ME599/699 Final Exam Part 3 (AA7075 bar, 3/8 in -> 5/16 in, +/-0.0005 in, Ra 0.1-0.4 um).
-Code: `turning_model.py` (`python turning_model.py --part3`). Demo: `deflection_model.ipynb`.
+Code: `turning_model.py` (`uv run turning_model.py --part3`). Demo: `deflection_model.ipynb`.
 
 ## Inputs and outputs
 
@@ -15,7 +15,7 @@ Code: `turning_model.py` (`python turning_model.py --part3`). Demo: `deflection_
 
 ## UI
 
-`python turning_ui.py` opens a window with the same inputs and outputs as the CLI. Both tabs share one editable
+`uv run turning_ui.py` opens a window with the same inputs and outputs as the CLI. Both tabs share one editable
 material table (pick a preset, then edit any value); press **Run** or Enter.
 
 - **Single cut**: process inputs plus an optional target diameter. Shows the report and six figures: chip thickness
@@ -26,10 +26,9 @@ material table (pick a preset, then edit any value); press **Run** or Enter.
   table and six figures: convergence to the target, commanded vs true depth, forces, deflection, temperature and
   chip thickness per pass.
 - Bad input (a non-number, an out-of-range depth) is reported in the text box instead of crashing.
-- Tcl/Tk: run `.\setup_venv.ps1` once, then `.\.venv\Scripts\python turning_ui.py`. The venv holds its own copy of
-  Tcl/Tk and a `sitecustomize.py` that points every interpreter in it at that copy, so a machine-wide
-  `TCL_LIBRARY` / `TK_LIBRARY` from another Python install (which breaks `tk.Tk()`) is ignored. Outside the venv,
-  `use_own_tcl` applies the same override to the UI process. Your environment variables are not changed.
+- Run with uv: `uv run turning_ui.py` (first run creates `.venv` from `pyproject.toml` / `uv.lock`). uv's Python
+  ships its own Tcl/Tk; `use_own_tcl` points the process at it, so a machine-wide `TCL_LIBRARY` / `TK_LIBRARY`
+  from another Python install (which breaks `tk.Tk()`) is ignored. Your environment variables are not changed.
 
 ## The deflection paradox and its solution
 

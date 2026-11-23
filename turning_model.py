@@ -11,8 +11,8 @@ Units: mm, N, N/mm^2 (= MPa), rad. Only the kc/kf power laws use micrometres
   p   process: rc, f, ap, d, L, k_machine, vc, re, pl (+ optional d_bar, Ls)  (see DEFAULTS, PART3)
   mat material: name, E_GPa, kc1, mc, kf1, mf, sigma_y, rho, cp, k_th (see MATERIALS)
 
-Usage: python turning_model.py [--material ti64 --rc 0.8 --f 0.18 --ap 0.25 --target 15.5 --plot]
-       python turning_model.py --part3 [--f-rough 0.1 --f-finish 0.05 --rpm 2000]
+Usage: uv run turning_model.py [--material ti64 --rc 0.8 --f 0.18 --ap 0.25 --target 15.5 --plot]
+       uv run turning_model.py --part3 [--f-rough 0.1 --f-finish 0.05 --rpm 2000]
 """
 from __future__ import annotations
 
@@ -390,6 +390,8 @@ def report(p: dict[str, Any], mat: dict[str, Any], res: dict[str, Any]) -> str:
 
 
 def plot(p: dict[str, Any], mat: dict[str, Any], res: dict[str, Any]) -> None:
+    from turning_ui import use_own_tcl     # ignore a stale machine-wide TCL_LIBRARY before the Tk backend loads
+    use_own_tcl()
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(1, 3, figsize=(14, 4))

@@ -13,10 +13,15 @@ the method; lathe settings, thermal constants and the critical temperature are p
 - Units: mm, N, N/mm^2, rad. Only convert to um inside the kc/kf power laws.
 - No dataclasses/classes: inputs are plain dicts (`p` process, `mat` material), results are plain dicts.
 - Notebooks: `deflection_model.ipynb` (inputs + model cell), `deflection_model_expanded.ipynb` (one cell per model step, plain NumPy, cross-checked against the module).
-- Tooling: pyright (Python LSP) and Context7 MCP (`.mcp.json`) are installed.
+- UI: `turning_ui.py` (tkinter + matplotlib, no new dependencies). Parse/run/plot are plain functions that call `turning_model.py`; only `build_ui` touches tkinter. Keep physics out of it.
+- Environment: managed by [uv](https://docs.astral.sh/uv/). Dependencies live in `pyproject.toml` (`dependencies` = runtime, `dev` group = pytest, pyright, notebook) and are locked in `uv.lock`; the interpreter is pinned in `.python-version`. Add packages with `uv add [--dev] <pkg>`, never `pip install` or a `requirements.txt`. Commit `pyproject.toml`, `uv.lock` and `.python-version`.
+- Tooling: pyright (Python LSP, also in the dev group) and Context7 MCP (`.mcp.json`) are installed.
 
 ## Commands
-- `python -m pytest -q`
-- `python turning_model.py [--plot]`
-- `python turning_model.py --part3 [--f-rough 0.1 --f-finish 0.05 --rpm 2000]`
-- `pyright turning_model.py test_turning_model.py`
+All run from the project folder; `uv run` creates/syncs `.venv` on first use.
+- `uv sync` installs the pinned environment (runtime + dev group)
+- `uv run pytest -q`
+- `uv run turning_model.py [--plot]`
+- `uv run turning_model.py --part3 [--f-rough 0.1 --f-finish 0.05 --rpm 2000]`
+- `uv run turning_ui.py` (uv's Python ships Tcl/Tk; `use_own_tcl` ignores a stale machine-wide `TCL_LIBRARY`/`TK_LIBRARY` that points at another Python)
+- `uv run pyright`

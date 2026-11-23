@@ -1,0 +1,23 @@
+[project]
+name = "me699-turning-model"
+version = "0.1.0"
+description = "Finish-turning deflection model for the ME599/699 final exam (cantilever deflection + nose-radius forces)"
+readme = "MODEL_NOTES.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "matplotlib",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pyright",
+    "notebook",
+]
+
+[tool.uv]
+package = false   # flat scripts, nothing to build or install
+
+[tool.pyright]
+include = ["turning_model.py", "turning_ui.py", "test_turning_model.py"]
