@@ -13,6 +13,22 @@ Code: `turning_model.py` (`python turning_model.py --part3`). Demo: `deflection_
 | Thermal: heat partition `beta`, contact width `w_contact` | Kinematic Ra, torque and power, flash temperature, Peclet number |
 | Lathe settings (rpm, feed lists) | Cycle time, MRR, fastest feasible setting, sensitivity table |
 
+## UI
+
+`python turning_ui.py` opens a window with the same inputs and outputs as the CLI. Both tabs share one editable
+material table (pick a preset, then edit any value); press **Run** or Enter.
+
+- **Single cut**: process inputs plus an optional target diameter. Shows the report and six figures: chip thickness
+  vs kappa, element forces (dFc, dFf) and cumulative sums of Fc / Fradial / Faxial (the columns of the workbook's
+  100-row table), deflection convergence, true vs nominal depth of cut, and the final forces.
+- **Part 3 plan**: the exam bar, tolerance, Ra band, thermal inputs and the lathe lists. Mode *search* finds the
+  fastest feasible setting (about 6 s), *fixed* runs the given feeds and rpm. Shows the pass table, the sensitivity
+  table and six figures: convergence to the target, commanded vs true depth, forces, deflection, temperature and
+  chip thickness per pass.
+- Bad input (a non-number, an out-of-range depth) is reported in the text box instead of crashing.
+- If `TCL_LIBRARY` / `TK_LIBRARY` point at another Python install, the UI overrides them for its own process
+  (`use_own_tcl`); your environment variables are not changed.
+
 ## The deflection paradox and its solution
 
 Cutting force depends on the depth of cut actually engaged, but that depth is reduced by the deflection the force

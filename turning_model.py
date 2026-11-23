@@ -101,19 +101,18 @@ def uncut_chip_thickness(kappa, rc: float, f: float):
     return rc + f * c - np.sqrt(rc**2 + f**2 * (c**2 - 1))
 
 
-def integrate_forces(rc: float, f: float, ap: float, mat: dict[str, Any],
-                     dkappa: float = DKAPPA, re: float = 0.0, pl: float = 0.0,
-                     hmin_ratio: float = 0.3) -> dict[str, float]:
-    """Sum dF = k(h) * h * ds over the engaged arc (ds = rc * dkappa).
+def force_profile(rc: float, f: float, ap: float, mat: dict[str, Any],
+                  dkappa: float = DKAPPA, re: float = 0.0, pl: float = 0.0,
+                  hmin_ratio: float = 0.3) -> dict[str, np.ndarray]:
+    """Per-element table over the engaged arc, like the workbook's rows 35-134.
+
+    kappa (rad), h (mm), dFc, dFf (N, normal to the edge), dFr, dFa (radial / axial parts of dFf)
+    and the running sums Fc_cum, Fr_cum, Fa_cum. dF = k(h) * h * ds with ds = rc * dkappa.
 
     Edge radius re (mm): elements thinner than h_min = hmin_ratio*re form no chip and add no
     cutting force. Ploughing (pl > 0): every engaged element also presses the edge into the
     surface with pl * sigma_y * re * ds, normal to the cutting edge (pl = calibration knob).
-
-    Returns Fc (tangential), Fr (radial), Fa (axial) in N and mean chip thickness h_avg in mm.
     """
-    if ap <= 1e-9:
-        return dict(Fc=0.0, Fr=0.0, Fa=0.0, h_avg=0.0)
     k_min, k_max = kappa_limits(rc, f, ap)
     n = max(1, round((k_max - k_min) / dkappa))
     kappa = np.linspace(k_min, k_max, n + 1)      # grid includes both end points
@@ -124,10 +123,23 @@ def integrate_forces(rc: float, f: float, ap: float, mat: dict[str, Any],
     dFc = np.where(cuts, mat["kc1"] * h_um ** mat["mc"] * h * ds, 0.0)
     dFf = np.where(cuts, mat["kf1"] * h_um ** mat["mf"] * h * ds, 0.0)   # normal to the cutting edge
     dFf = dFf + pl * mat.get("sigma_y", 0.0) * re * ds                   # ploughing (off by default)
-    return dict(Fc=float(dFc.sum()),
-                Fr=float((np.cos(kappa) * dFf).sum()),
-                Fa=float((np.sin(kappa) * dFf).sum()),
-                h_avg=float(h.mean()))
+    dFr, dFa = np.cos(kappa) * dFf, np.sin(kappa) * dFf
+    return dict(kappa=kappa, h=h, dFc=dFc, dFf=dFf, dFr=dFr, dFa=dFa,
+                Fc_cum=np.cumsum(dFc), Fr_cum=np.cumsum(dFr), Fa_cum=np.cumsum(dFa))
+
+
+def integrate_forces(rc: float, f: float, ap: float, mat: dict[str, Any],
+                     dkappa: float = DKAPPA, re: float = 0.0, pl: float = 0.0,
+                     hmin_ratio: float = 0.3) -> dict[str, float]:
+    """Total force over the engaged arc (the end of force_profile's running sums).
+
+    Returns Fc (tangential), Fr (radial), Fa (axial) in N and mean chip thickness h_avg in mm.
+    """
+    if ap <= 1e-9:
+        return dict(Fc=0.0, Fr=0.0, Fa=0.0, h_avg=0.0)
+    prof = force_profile(rc, f, ap, mat, dkappa, re, pl, hmin_ratio)
+    return dict(Fc=float(prof["Fc_cum"][-1]), Fr=float(prof["Fr_cum"][-1]),
+                Fa=float(prof["Fa_cum"][-1]), h_avg=float(prof["h"].mean()))
 
 
 # ----------------------------------------------- Part 2: deflection + iteration
@@ -422,6 +434,15 @@ def report_plan(p: dict[str, Any], mat: dict[str, Any], plan: dict[str, Any]) ->
     return "\n".join(lines)
 
 
+def report_sensitivity(rows: list[dict[str, Any]]) -> str:
+    """Text table for sensitivity() rows."""
+    lines = ["sensitivity (nominal pass count replayed on a perturbed model)",
+             f"{'case':<26}{'d_final':>9}{'err um':>8}  in tol  re-plan passes"]
+    lines += [f"{r['case']:<26}{r['d_final']:>9.4f}{r['err_um']:>8.1f}  {str(r['in_tolerance']):<6}  {r['n_replan']}"
+              for r in rows]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     for name in DEFAULTS:
@@ -447,11 +468,8 @@ def main() -> None:
             plan = search_strategy(p, mat)
             print("fastest setting meeting tolerance, Ra and temperature:", plan["config"], "\n")
         print(report_plan(p, mat, plan))
-        print("\nsensitivity (replaying the nominal pass count on a perturbed model)")
-        print(f"{'case':<26}{'d_final':>9}{'err um':>8}  in tol  re-plan passes")
-        for r in sensitivity(p, mat, **plan["config"] if "config" in plan else
-                             dict(f_rough=a.f_rough, f_finish=a.f_finish, rpm=a.rpm)):
-            print(f"{r['case']:<26}{r['d_final']:>9.4f}{r['err_um']:>8.1f}  {str(r['in_tolerance']):<6}  {r['n_replan']}")
+        kw = plan["config"] if "config" in plan else dict(f_rough=a.f_rough, f_finish=a.f_finish, rpm=a.rpm)
+        print("\n" + report_sensitivity(sensitivity(p, mat, **kw)))
         return
 
     if a.target is not None:

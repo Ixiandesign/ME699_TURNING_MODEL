@@ -200,3 +200,84 @@ def test_solver_converges_with_edge_radius_cutoff():
         res = tm.solve_deflection({**P3, "f": f, "ap": ap}, AL)
         assert res["converged"]
         assert abs(res["ap_true"] + res["deflection"] - ap) < 2e-3   # residual below 2 um
+
+
+# ------------------------------------------------------------------- UI helpers
+def test_force_profile_matches_workbook_table():
+    k_min, k_max = tm.kappa_limits(0.8, 0.3, 0.663)
+    prof = tm.force_profile(0.8, 0.3, 0.663, TI64, dkappa=(k_max - k_min) / 99)
+    assert len(prof["kappa"]) == 100                                  # workbook rows 35..134
+    assert prof["h"][0] == pytest.approx(2.6643e-4, rel=1e-3)         # C35
+    assert prof["dFc"][0] == pytest.approx(0.019374, rel=1e-3)        # D35
+    assert prof["dFf"][1] == pytest.approx(0.448837, rel=1e-3)        # E36
+    assert prof["Fc_cum"][-1] == pytest.approx(425.09, rel=1e-3)      # H134
+    assert prof["Fr_cum"][-1] == pytest.approx(117.85, rel=1e-3)      # I134
+    assert prof["Fa_cum"][-1] == pytest.approx(102.61, rel=1e-3)      # J134
+    tot = tm.integrate_forces(0.8, 0.3, 0.663, TI64, dkappa=(k_max - k_min) / 99)
+    assert prof["Fc_cum"][-1] == pytest.approx(tot["Fc"]) and prof["Fr_cum"][-1] == pytest.approx(tot["Fr"])
+
+
+def test_ui_parse_single_and_material():
+    import turning_ui as ui
+    vals = {k: d for k, _, d in ui.SINGLE_FIELDS}
+    p, target = ui.parse_single(vals)
+    assert p["rc"] == tm.DEFAULTS["rc"] and p["L"] == tm.DEFAULTS["L"] and target is None
+    assert ui.parse_single({**vals, "target": "15.5"})[1] == 15.5
+    mat = ui.parse_material("al7075", {**ui.material_strings(AL), "E_GPa": "80"})
+    assert mat["E_GPa"] == 80.0 and mat["kc1"] == AL["kc1"] and mat["name"] == AL["name"]
+    with pytest.raises(ValueError, match="Feed"):
+        ui.parse_single({**vals, "f": "abc"})
+
+
+def test_ui_run_single_matches_model():
+    import turning_ui as ui
+    vals = {k: d for k, _, d in ui.SINGLE_FIELDS}
+    p, target = ui.parse_single(vals)
+    out = ui.run_single(p, AL, target)
+    assert out["res"]["ap_true"] == pytest.approx(tm.solve_deflection(p, AL)["ap_true"])
+    assert "true ap" in out["text"]
+    out_t = ui.run_single(p, AL, 15.5)                                # target diameter -> solves nominal ap
+    assert out_t["res"]["d_final"] == pytest.approx(15.5, abs=1e-4) and "command nominal ap" in out_t["text"]
+    with pytest.raises(ValueError):
+        ui.run_single({**p, "ap": 5.0}, AL, None)                     # ap > 2*rc
+
+
+def test_ui_parse_and_run_part3_fixed():
+    import turning_ui as ui
+    vals = {k: d for k, _, d in ui.PART3_FIELDS}
+    p, cfg = ui.parse_part3({**vals, "mode": "fixed", "f_rough": "0.1", "f_finish": "0.05", "rpm": "2000"})
+    assert p["d_target"] == P3["d_target"] and p["ra_band"] == P3["ra_band"]
+    assert cfg["mode"] == "fixed" and cfg["rpm"] == 2000.0
+    _, cfg_s = ui.parse_part3({**vals, "mode": "search", "feeds": "0.05, 0.1", "rpms": "2000,3000"})
+    assert cfg_s["feeds"] == (0.05, 0.1) and cfg_s["rpms"] == (2000.0, 3000.0)
+    out = ui.run_part3(p, AL, cfg)
+    ref = tm.plan_passes(p, AL, 0.1, 0.05, 2000.0)
+    assert out["plan"]["summary"]["d_final"] == pytest.approx(ref["summary"]["d_final"])
+    assert "sensitivity" in out["text"] and "final diameter" in out["text"]
+
+
+def test_ui_plots_draw_expected_axes():
+    from matplotlib.figure import Figure
+
+    import turning_ui as ui
+    p = {**tm.DEFAULTS}
+    fig = Figure()
+    ui.plot_single(fig, p, AL, tm.solve_deflection(p, AL))
+    assert len(fig.axes) == 6
+    assert all(ax.has_data() for ax in fig.axes)
+    plan = tm.plan_passes(P3, AL, 0.1, 0.05, 2000.0)
+    fig2 = Figure()
+    ui.plot_plan(fig2, P3, AL, plan)
+    assert len(fig2.axes) == 6
+    assert all(ax.has_data() for ax in fig2.axes)
+
+
+def test_ui_ignores_stale_tcl_environment(monkeypatch):
+    import os
+
+    import turning_ui as ui
+    monkeypatch.setenv("TCL_LIBRARY", r"C:\nowhere\other-python\tcl8.6")
+    monkeypatch.setenv("TK_LIBRARY", r"C:\nowhere\other-python\tk8.6")
+    ui.use_own_tcl()
+    assert os.path.isfile(os.path.join(os.environ["TCL_LIBRARY"], "init.tcl"))
+    assert os.path.isdir(os.environ["TK_LIBRARY"])

@@ -13,10 +13,12 @@ the method; lathe settings, thermal constants and the critical temperature are p
 - Units: mm, N, N/mm^2, rad. Only convert to um inside the kc/kf power laws.
 - No dataclasses/classes: inputs are plain dicts (`p` process, `mat` material), results are plain dicts.
 - Notebooks: `deflection_model.ipynb` (inputs + model cell), `deflection_model_expanded.ipynb` (one cell per model step, plain NumPy, cross-checked against the module).
+- UI: `turning_ui.py` (tkinter + matplotlib, no new dependencies). Parse/run/plot are plain functions that call `turning_model.py`; only `build_ui` touches tkinter. Keep physics out of it.
 - Tooling: pyright (Python LSP) and Context7 MCP (`.mcp.json`) are installed.
 
 ## Commands
 - `python -m pytest -q`
 - `python turning_model.py [--plot]`
 - `python turning_model.py --part3 [--f-rough 0.1 --f-finish 0.05 --rpm 2000]`
-- `pyright turning_model.py test_turning_model.py`
+- `python turning_ui.py`
+- `pyright turning_model.py turning_ui.py test_turning_model.py`
